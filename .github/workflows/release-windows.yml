@@ -119,52 +119,38 @@ jobs:
           # Содержимое flutter build windows --release лежит в
           # build/windows/x64/runner/Release/ — это hundler.exe + все
           # его DLL'ки (flutter, plugin DLLs, data/ папка с assets).
+          # bin\sing-box.exe и bin\wintun.dll уже лежат в dist\bin\ —
+          # их положили предыдущие шаги. Мерджим Flutter-output поверх.
           Copy-Item -Recurse 'build\windows\x64\runner\Release\*' 'dist\'
-          # Маленький README.txt пользователю — что это, как ставить.
-          Copy-Item 'dist-readme.txt' 'dist\README.txt' -ErrorAction SilentlyContinue
-          if (-not (Test-Path 'dist\README.txt')) {
-            @"
-          Hundler VPN — Windows client
-
-          Установка:
-            1. Распакуйте архив в любую папку (например в %LOCALAPPDATA%\Hundler).
-            2. Запустите hundler.exe. Согласитесь на UAC-prompt — VPN
-               требует прав администратора для wintun TUN-адаптера.
-            3. Войдите в аккаунт через Telegram.
-
-          Состав:
-            hundler.exe        — основное приложение
-            bin\sing-box.exe   — VPN-движок (SagerNet sing-box ${{ env.SINGBOX_VERSION }})
-            bin\wintun.dll     — TUN-драйвер (WireGuard wintun ${{ env.WINTUN_VERSION }})
-            data\              — Flutter assets (тигр, флаги стран, шрифты)
-            *.dll              — Flutter runtime + плагины
-
-          При первом запуске app автоматически копирует bin\sing-box.exe
-          и bin\wintun.dll в %APPDATA%\com.hundlervpn\hundler\bin\ — это
-          где они должны лежать для работы VPN. Папка из zip больше не
-          нужна, но удалять не обязательно.
-
-          Поддержка: https://hundlervpn.xyz/support
-          Telegram:  @hundlervpn_support
-          "@ | Out-File -FilePath 'dist\README.txt' -Encoding utf8
-          }
           Get-ChildItem 'dist\' -Recurse | Select-Object FullName, Length
 
-      - name: Zip release
+      - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
+          # windows-latest runner с 2024 года имеет Inno Setup 6 в PATH
+          # (через ImageBuilder). Если внезапно пропадёт — раскомментим
+          # `choco install innosetup -y` ниже.
+          # choco install innosetup -y --no-progress
           $version = "${{ steps.ver.outputs.version }}"
-          $zipName = "HundlerVPN-windows-x64-$version.zip"
-          Compress-Archive -Path 'dist\*' -DestinationPath $zipName -CompressionLevel Optimal
-          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
-          echo "Created $zipName ($(((Get-Item $zipName).Length / 1MB).ToString('F1')) MB)"
+          New-Item -ItemType Directory -Path 'installer\output' -Force | Out-Null
+          # iscc.exe компилирует .iss → installer.exe в installer\output\
+          & iscc.exe "/DAppVersion=$version" 'installer\setup.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
+          $exe = "installer\output\HundlerVPN-Setup-$version.exe"
+          if (-not (Test-Path $exe)) { throw "Installer not found at $exe" }
+          $sizeMB = ((Get-Item $exe).Length / 1MB).ToString('F1')
+          echo "INSTALLER_PATH=$exe" >> $env:GITHUB_ENV
+          echo "INSTALLER_NAME=HundlerVPN-Setup-$version.exe" >> $env:GITHUB_ENV
+          echo "INSTALLER_SIZE=$sizeMB MB" >> $env:GITHUB_ENV
+          echo "Built installer: $exe ($sizeMB MB)"
 
       - name: Compute SHA256
         shell: pwsh
         run: |
-          $h = (Get-FileHash $env:ZIP_NAME -Algorithm SHA256).Hash.ToLower()
-          $h | Out-File -FilePath "$env:ZIP_NAME.sha256" -Encoding ascii -NoNewline
+          $h = (Get-FileHash $env:INSTALLER_PATH -Algorithm SHA256).Hash.ToLower()
+          $h | Out-File -FilePath "$env:INSTALLER_PATH.sha256" -Encoding ascii -NoNewline
           echo "SHA256: $h"
+          echo "INSTALLER_SHA256=$h" >> $env:GITHUB_ENV
 
       - name: Create / update GitHub Release
         # softprops/action-gh-release создаёт релиз если его нет под
@@ -176,34 +162,42 @@ jobs:
           name: Hundler VPN ${{ steps.ver.outputs.version }}
           generate_release_notes: true
           files: |
-            ${{ env.ZIP_NAME }}
-            ${{ env.ZIP_NAME }}.sha256
+            ${{ env.INSTALLER_PATH }}
+            ${{ env.INSTALLER_PATH }}.sha256
           body: |
-            ## Скачать
+            ## ⬇️ Скачать установщик
             
-            [⬇️ Скачать для Windows x64](https://github.com/hundlervpn/Hundler-App/releases/download/${{ steps.ver.outputs.version }}/${{ env.ZIP_NAME }})
+            **[HundlerVPN-Setup-${{ steps.ver.outputs.version }}.exe](https://github.com/hundlervpn/Hundler-App/releases/download/${{ steps.ver.outputs.version }}/HundlerVPN-Setup-${{ steps.ver.outputs.version }}.exe)** (${{ env.INSTALLER_SIZE }})
             
-            ## Что внутри
-            
-            - `hundler.exe` — Hundler VPN клиент (Flutter Desktop)
-            - `bin/sing-box.exe` — sing-box `${{ env.SINGBOX_VERSION }}` (VLESS+Reality+Hysteria2 движок)
-            - `bin/wintun.dll` — wintun `${{ env.WINTUN_VERSION }}` (TUN-драйвер)
-            - Все остальные `.dll` — Flutter runtime + плагины
+            Скачали → запустили → Next/Next/Install → готово.
             
             ## Установка
             
-            1. Скачайте zip → распакуйте в любую папку.
-            2. Запустите `hundler.exe`. Согласитесь на UAC-prompt.
-            3. Войдите через Telegram.
+            1. Скачайте `HundlerVPN-Setup-${{ steps.ver.outputs.version }}.exe`.
+            2. Запустите. Согласитесь на UAC-prompt — VPN требует прав администратора для wintun TUN-адаптера.
+            3. Wizard на русском проведёт через установку (~30 секунд).
+            4. Запустите Hundler VPN из меню Пуск или с рабочего стола.
+            5. Войдите через Telegram.
             
             ## Системные требования
             
-            - Windows 10 (build 19041+) или Windows 11
-            - x64 архитектура (ARM64 не поддерживается — sing-box wintun-only x64)
-            - Права администратора (обязательно для wintun TUN-адаптера)
+            - **Windows 10** build 17763 (1809) или новее, либо **Windows 11**
+            - **x64** архитектура (ARM64 не поддерживается — sing-box wintun-only x64)
+            - **Права администратора** (запрашиваются автоматически через UAC)
+            
+            ## Удаление
+            
+            Settings → Apps → Hundler VPN → Uninstall. Или из меню Пуск → "Удалить Hundler VPN". Удаление полное — чистит и `%APPDATA%\com.hundlervpn\` (sub-token, кеш, бинари).
+            
+            ## Что внутри installer'а
+            
+            - `hundler.exe` — основное приложение
+            - `sing-box.exe` ${{ env.SINGBOX_VERSION }} — VPN-движок (VLESS+Reality+Hysteria2)
+            - `wintun.dll` ${{ env.WINTUN_VERSION }} — TUN-драйвер
+            - Flutter runtime + плагины
             
             ## SHA256
             
             ```
-            ${{ hashFiles(env.ZIP_NAME) }}  ${{ env.ZIP_NAME }}
+            ${{ env.INSTALLER_SHA256 }}  ${{ env.INSTALLER_NAME }}
             ```
