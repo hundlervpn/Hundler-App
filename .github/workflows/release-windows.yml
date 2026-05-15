@@ -156,48 +156,19 @@ jobs:
         # softprops/action-gh-release создаёт релиз если его нет под
         # этот тег, или просто добавляет artifacts к существующему. Это
         # idempotent — повторный push того же тега не дубликат, а апдейт.
+        #
+        # `generate_release_notes: false` — мы НЕ хотим автогенерируемый
+        # changelog "Full Changelog: v0.x.x...v0.y.y" под основным body.
+        # Юзер видит ровно тот текст что мы написали ниже, без шума.
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.version }}
           name: Hundler VPN ${{ steps.ver.outputs.version }}
-          generate_release_notes: true
+          generate_release_notes: false
           files: |
             ${{ env.INSTALLER_PATH }}
             ${{ env.INSTALLER_PATH }}.sha256
           body: |
-            ## ⬇️ Скачать установщик
+            ## ⬇️ [HundlerVPN-Setup-${{ steps.ver.outputs.version }}.exe](https://github.com/hundlervpn/Hundler-App/releases/download/${{ steps.ver.outputs.version }}/HundlerVPN-Setup-${{ steps.ver.outputs.version }}.exe) — ${{ env.INSTALLER_SIZE }}
             
-            **[HundlerVPN-Setup-${{ steps.ver.outputs.version }}.exe](https://github.com/hundlervpn/Hundler-App/releases/download/${{ steps.ver.outputs.version }}/HundlerVPN-Setup-${{ steps.ver.outputs.version }}.exe)** (${{ env.INSTALLER_SIZE }})
-            
-            Скачали → запустили → Next/Next/Install → готово.
-            
-            ## Установка
-            
-            1. Скачайте `HundlerVPN-Setup-${{ steps.ver.outputs.version }}.exe`.
-            2. Запустите. Согласитесь на UAC-prompt — VPN требует прав администратора для wintun TUN-адаптера.
-            3. Wizard на русском проведёт через установку (~30 секунд).
-            4. Запустите Hundler VPN из меню Пуск или с рабочего стола.
-            5. Войдите через Telegram.
-            
-            ## Системные требования
-            
-            - **Windows 10** build 17763 (1809) или новее, либо **Windows 11**
-            - **x64** архитектура (ARM64 не поддерживается — sing-box wintun-only x64)
-            - **Права администратора** (запрашиваются автоматически через UAC)
-            
-            ## Удаление
-            
-            Settings → Apps → Hundler VPN → Uninstall. Или из меню Пуск → "Удалить Hundler VPN". Удаление полное — чистит и `%APPDATA%\com.hundlervpn\` (sub-token, кеш, бинари).
-            
-            ## Что внутри installer'а
-            
-            - `hundler.exe` — основное приложение
-            - `sing-box.exe` ${{ env.SINGBOX_VERSION }} — VPN-движок (VLESS+Reality+Hysteria2)
-            - `wintun.dll` ${{ env.WINTUN_VERSION }} — TUN-драйвер
-            - Flutter runtime + плагины
-            
-            ## SHA256
-            
-            ```
-            ${{ env.INSTALLER_SHA256 }}  ${{ env.INSTALLER_NAME }}
-            ```
+            Скачать и запустить. Windows 10/11 x64.
