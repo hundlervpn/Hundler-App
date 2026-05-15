@@ -61,10 +61,12 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          # Без `flutter-version` action ставит latest из канала.
+          # Нужно ≥3.27 потому что `flutter_lints: ^6.0.0` требует
+          # Dart >=3.7. Если когда-нибудь свежий stable сломает сборку —
+          # pin'нем конкретную версию (например `flutter-version: '3.32.x'`)
+          # и обновим pubspec соответственно.
           channel: stable
-          # Pin Flutter major-minor для воспроизводимости — major-апгрейды
-          # могут поломать сборку. См. WINDOWS-AGENTS.md "Flutter version".
-          flutter-version: '3.24.x'
           cache: true
 
       - name: Flutter version
