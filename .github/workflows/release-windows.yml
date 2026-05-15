@@ -1,0 +1,207 @@
+name: Release Windows
+
+# Запускается на push git-тега `v*.*.*` (например `v0.2.0`) — собирает
+# Windows-релиз, скачивает sing-box.exe + wintun.dll, кладёт всё в zip,
+# создаёт GitHub Release и аттачит zip-артефакт.
+#
+# Также можно дёрнуть руками через UI → "Actions" → "Release Windows"
+# → "Run workflow" — это полезно для пересборки без перетегирования.
+#
+# После сборки на странице https://github.com/hundlervpn/Hundler-App/releases
+# появляется свежий релиз с public download URL вида
+# https://github.com/hundlervpn/Hundler-App/releases/download/v0.2.0/HundlerVPN-windows-x64-v0.2.0.zip
+# На неё мы линкуем кнопку Download на hundlervpn.xyz/download.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия для ручной сборки (например v0.2.0-test)'
+        required: true
+        default: 'v0.0.0-dev'
+
+permissions:
+  # softprops/action-gh-release требует contents:write чтобы создать релиз
+  # и пушнуть теги. Дефолтный GITHUB_TOKEN автоматически получает это право.
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows x64 release
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    env:
+      # Версии bundled-бинарей. Меняй явно при апдейте — bumping этих
+      # переменных приведёт к авто-обновлению юзерских клиентов через
+      # /api/clients/windows/latest.json (см. update-баннер в home_screen).
+      SINGBOX_VERSION: '1.13.11'
+      WINTUN_VERSION: '0.14.1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $version = $env:GITHUB_REF -replace '^refs/tags/', ''
+          } else {
+            $version = '${{ github.event.inputs.version }}'
+            if (-not $version) { $version = 'v0.0.0-dev' }
+          }
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "Release version: $version"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          # Pin Flutter major-minor для воспроизводимости — major-апгрейды
+          # могут поломать сборку. См. WINDOWS-AGENTS.md "Flutter version".
+          flutter-version: '3.24.x'
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-pub
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Download sing-box ${{ env.SINGBOX_VERSION }}
+        shell: pwsh
+        run: |
+          $ver = "${{ env.SINGBOX_VERSION }}"
+          $url = "https://github.com/SagerNet/sing-box/releases/download/v$ver/sing-box-$ver-windows-amd64.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest $url -OutFile "$env:RUNNER_TEMP\sing-box.zip"
+          Expand-Archive "$env:RUNNER_TEMP\sing-box.zip" "$env:RUNNER_TEMP\sing-box" -Force
+          $exe = Get-ChildItem -Recurse -Filter 'sing-box.exe' "$env:RUNNER_TEMP\sing-box" | Select-Object -First 1
+          if (-not $exe) { throw "sing-box.exe not found in archive" }
+          New-Item -ItemType Directory -Path 'dist\bin' -Force | Out-Null
+          Copy-Item $exe.FullName 'dist\bin\sing-box.exe'
+
+      - name: Download wintun ${{ env.WINTUN_VERSION }}
+        shell: pwsh
+        run: |
+          $ver = "${{ env.WINTUN_VERSION }}"
+          $url = "https://www.wintun.net/builds/wintun-$ver.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest $url -OutFile "$env:RUNNER_TEMP\wintun.zip"
+          Expand-Archive "$env:RUNNER_TEMP\wintun.zip" "$env:RUNNER_TEMP\wintun" -Force
+          # В архиве wintun.dll лежит в wintun/bin/amd64/wintun.dll
+          $dll = Join-Path "$env:RUNNER_TEMP\wintun" 'wintun\bin\amd64\wintun.dll'
+          if (-not (Test-Path $dll)) {
+            # На случай если структура архива изменится — ищем рекурсивно
+            $dll = (Get-ChildItem -Recurse -Filter 'wintun.dll' "$env:RUNNER_TEMP\wintun" |
+                    Where-Object { $_.FullName -match '\\amd64\\' } |
+                    Select-Object -First 1).FullName
+          }
+          if (-not $dll) { throw "wintun.dll (amd64) not found in archive" }
+          Copy-Item $dll 'dist\bin\wintun.dll'
+
+      - name: Assemble release folder
+        shell: pwsh
+        run: |
+          # Содержимое flutter build windows --release лежит в
+          # build/windows/x64/runner/Release/ — это hundler.exe + все
+          # его DLL'ки (flutter, plugin DLLs, data/ папка с assets).
+          Copy-Item -Recurse 'build\windows\x64\runner\Release\*' 'dist\'
+          # Маленький README.txt пользователю — что это, как ставить.
+          Copy-Item 'dist-readme.txt' 'dist\README.txt' -ErrorAction SilentlyContinue
+          if (-not (Test-Path 'dist\README.txt')) {
+            @"
+          Hundler VPN — Windows client
+
+          Установка:
+            1. Распакуйте архив в любую папку (например в %LOCALAPPDATA%\Hundler).
+            2. Запустите hundler.exe. Согласитесь на UAC-prompt — VPN
+               требует прав администратора для wintun TUN-адаптера.
+            3. Войдите в аккаунт через Telegram.
+
+          Состав:
+            hundler.exe        — основное приложение
+            bin\sing-box.exe   — VPN-движок (SagerNet sing-box ${{ env.SINGBOX_VERSION }})
+            bin\wintun.dll     — TUN-драйвер (WireGuard wintun ${{ env.WINTUN_VERSION }})
+            data\              — Flutter assets (тигр, флаги стран, шрифты)
+            *.dll              — Flutter runtime + плагины
+
+          При первом запуске app автоматически копирует bin\sing-box.exe
+          и bin\wintun.dll в %APPDATA%\com.hundlervpn\hundler\bin\ — это
+          где они должны лежать для работы VPN. Папка из zip больше не
+          нужна, но удалять не обязательно.
+
+          Поддержка: https://hundlervpn.xyz/support
+          Telegram:  @hundlervpn_support
+          "@ | Out-File -FilePath 'dist\README.txt' -Encoding utf8
+          }
+          Get-ChildItem 'dist\' -Recurse | Select-Object FullName, Length
+
+      - name: Zip release
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          $zipName = "HundlerVPN-windows-x64-$version.zip"
+          Compress-Archive -Path 'dist\*' -DestinationPath $zipName -CompressionLevel Optimal
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+          echo "Created $zipName ($(((Get-Item $zipName).Length / 1MB).ToString('F1')) MB)"
+
+      - name: Compute SHA256
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash $env:ZIP_NAME -Algorithm SHA256).Hash.ToLower()
+          $h | Out-File -FilePath "$env:ZIP_NAME.sha256" -Encoding ascii -NoNewline
+          echo "SHA256: $h"
+
+      - name: Create / update GitHub Release
+        # softprops/action-gh-release создаёт релиз если его нет под
+        # этот тег, или просто добавляет artifacts к существующему. Это
+        # idempotent — повторный push того же тега не дубликат, а апдейт.
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: Hundler VPN ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.ZIP_NAME }}.sha256
+          body: |
+            ## Скачать
+            
+            [⬇️ Скачать для Windows x64](https://github.com/hundlervpn/Hundler-App/releases/download/${{ steps.ver.outputs.version }}/${{ env.ZIP_NAME }})
+            
+            ## Что внутри
+            
+            - `hundler.exe` — Hundler VPN клиент (Flutter Desktop)
+            - `bin/sing-box.exe` — sing-box `${{ env.SINGBOX_VERSION }}` (VLESS+Reality+Hysteria2 движок)
+            - `bin/wintun.dll` — wintun `${{ env.WINTUN_VERSION }}` (TUN-драйвер)
+            - Все остальные `.dll` — Flutter runtime + плагины
+            
+            ## Установка
+            
+            1. Скачайте zip → распакуйте в любую папку.
+            2. Запустите `hundler.exe`. Согласитесь на UAC-prompt.
+            3. Войдите через Telegram.
+            
+            ## Системные требования
+            
+            - Windows 10 (build 19041+) или Windows 11
+            - x64 архитектура (ARM64 не поддерживается — sing-box wintun-only x64)
+            - Права администратора (обязательно для wintun TUN-адаптера)
+            
+            ## SHA256
+            
+            ```
+            ${{ hashFiles(env.ZIP_NAME) }}  ${{ env.ZIP_NAME }}
+            ```
