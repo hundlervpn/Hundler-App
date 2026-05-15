@@ -148,15 +148,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       style: HundlerTypography.brandTitle(size: 22),
                     ),
                   ),
-                  const SizedBox(height: HundlerSpacing.xs),
-                  Center(
-                    child: Text(
-                      'VLESS + Reality, обход DPI',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: HundlerColors.textSecondary,
-                          ),
-                    ),
-                  ),
                   const SizedBox(height: HundlerSpacing.xxl),
 
                   if (_lastError != null) ...[

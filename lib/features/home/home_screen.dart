@@ -11,6 +11,8 @@ import 'package:window_manager/window_manager.dart';
 import '../../core/api_client.dart';
 import '../../core/colors.dart';
 import '../../core/typography.dart';
+import '../../services/update_checker.dart';
+import '../../services/update_installer.dart';
 import '../../services/vpn_service.dart';
 import '../auth/auth_controller.dart';
 import '../servers/servers_controller.dart';
@@ -1020,17 +1022,57 @@ class _RenewButtonState extends State<_RenewButton> {
   }
 }
 
-/// Баннер «Доступна новая версия». Скрыт если обновлений нет, либо
-/// если проверка не удалась (нет сети / endpoint 404). При tap →
-/// открывает `url` в браузере, юзер качает installer вручную.
+/// Баннер «Доступна новая версия» с in-app кнопкой "Обновить".
 ///
-/// Если `mandatory: true` — баннер красный, более выраженный (TODO:
-/// заблокировать кнопку Connect через флаг в `vpnControllerProvider`).
-class _UpdateBanner extends ConsumerWidget {
+/// Жизненный цикл:
+///   1. `updateInfoProvider` асинхронно дёргает /api/clients/windows/latest.json.
+///   2. Если есть новая версия — рендерим компактную карточку с кнопкой.
+///   3. Тап "Обновить" → [UpdateInstaller.downloadAndInstall]:
+///      - показываем прогресс-бар
+///      - скачиваем installer.exe в %TEMP%
+///      - проверяем SHA256
+///      - запускаем installer с /SILENT /CLOSEAPPLICATIONS
+///      - hundler.exe выходит, installer обновляет файлы и запускает
+///        обратно из новой папки.
+///
+/// Если `mandatory: true` — баннер красный (TODO: заблокировать кнопку
+/// Connect через флаг в `vpnControllerProvider`).
+class _UpdateBanner extends ConsumerStatefulWidget {
   const _UpdateBanner();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_UpdateBanner> createState() => _UpdateBannerState();
+}
+
+class _UpdateBannerState extends ConsumerState<_UpdateBanner> {
+  /// `null` — кнопка готова к тапу. `0.0..1.0` — идёт скачивание.
+  /// После 1.0 запустится installer и hundler.exe выйдет.
+  double? _progress;
+  String? _error;
+
+  Future<void> _onUpdate(UpdateInfo info) async {
+    setState(() {
+      _progress = 0.0;
+      _error = null;
+    });
+    final result = await UpdateInstaller.instance.downloadAndInstall(
+      info,
+      onProgress: (p) {
+        if (!mounted) return;
+        setState(() => _progress = p);
+      },
+    );
+    // Сюда мы попадём ТОЛЬКО если installer не запустился. На успешном
+    // запуске exit(0) уже выстрелил.
+    if (!mounted) return;
+    setState(() {
+      _progress = null;
+      _error = result.userMessage;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final updateAsync = ref.watch(updateInfoProvider);
     final info = updateAsync.valueOrNull;
     if (info == null) return const SizedBox.shrink();
@@ -1038,30 +1080,27 @@ class _UpdateBanner extends ConsumerWidget {
     final accent = info.mandatory
         ? HundlerColors.danger
         : HundlerColors.accentOrange;
+    final isDownloading = _progress != null;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: HundlerSpacing.md),
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => launchUrl(
-            Uri.parse(info.url),
-            mode: LaunchMode.externalApplication,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: HundlerSpacing.md,
+          vertical: 12,
+        ),
+        decoration: BoxDecoration(
+          color: accent.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(HundlerRadius.md),
+          border: Border.all(
+            color: accent.withValues(alpha: 0.45),
           ),
-          child: Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: HundlerSpacing.md,
-              vertical: 12,
-            ),
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(HundlerRadius.md),
-              border: Border.all(
-                color: accent.withValues(alpha: 0.45),
-              ),
-            ),
-            child: Row(
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
               children: [
                 Icon(LucideIcons.download, size: 18, color: accent),
                 const SizedBox(width: HundlerSpacing.sm + 2),
@@ -1097,9 +1136,91 @@ class _UpdateBanner extends ConsumerWidget {
                     ],
                   ),
                 ),
-                const SizedBox(width: HundlerSpacing.xs),
-                Icon(LucideIcons.externalLink, size: 14, color: accent),
+                const SizedBox(width: HundlerSpacing.sm),
+                _UpdateButton(
+                  accent: accent,
+                  progress: _progress,
+                  onPressed: isDownloading ? null : () => _onUpdate(info),
+                ),
               ],
+            ),
+            if (isDownloading) ...[
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(2),
+                child: LinearProgressIndicator(
+                  value: _progress,
+                  minHeight: 3,
+                  backgroundColor: accent.withValues(alpha: 0.15),
+                  valueColor: AlwaysStoppedAnimation(accent),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _progress! < 1.0
+                    ? 'Скачивание ${(_progress! * 100).toStringAsFixed(0)}%'
+                    : 'Запуск установщика…',
+                style: const TextStyle(
+                  fontSize: 10,
+                  color: HundlerColors.textSecondary,
+                  height: 1.2,
+                ),
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _error!,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: HundlerColors.danger,
+                  height: 1.3,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Маленькая «pill»-кнопка справа от текста баннера. Когда идёт
+/// скачивание (`progress != null`) — кнопка disabled и выглядит
+/// прозрачнее, основное внимание уходит на прогресс-бар ниже.
+class _UpdateButton extends StatelessWidget {
+  const _UpdateButton({
+    required this.accent,
+    required this.progress,
+    required this.onPressed,
+  });
+  final Color accent;
+  final double? progress;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = onPressed == null;
+    return Material(
+      color: disabled
+          ? accent.withValues(alpha: 0.20)
+          : accent,
+      borderRadius: BorderRadius.circular(HundlerRadius.sm),
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(HundlerRadius.sm),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 7,
+          ),
+          child: Text(
+            disabled ? 'Скачивание…' : 'Обновить',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+              height: 1.0,
             ),
           ),
         ),

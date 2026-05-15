@@ -48,7 +48,6 @@ class ServersScreen extends ConsumerWidget {
             // списка локаций ниже. При выборе Hysteria покажутся только
             // серверы у которых бэкенд вернул `protocols: ["...", "hysteria"]`
             // (фактически — DE 213.182.213.183, единственный с Hy2 inbound).
-            const _ProtocolHint(),
             const _ProtocolToggle(),
             Expanded(
               child: serversAsync.when(
@@ -217,48 +216,6 @@ class _ProtocolButton extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Подсказка над сегмент-контролом VLESS/Hysteria. Объясняет юзеру,
-/// что переключатель меняет тип VPN-туннеля, а не локацию.
-class _ProtocolHint extends StatelessWidget {
-  const _ProtocolHint();
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        HundlerSpacing.md,
-        HundlerSpacing.md,
-        HundlerSpacing.md,
-        HundlerSpacing.xs,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'ВЫБОР ПРОТОКОЛА',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  letterSpacing: 1.4,
-                  fontWeight: FontWeight.w700,
-                  color: HundlerColors.textSecondary,
-                  fontSize: 10,
-                ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'VLESS — стабильный, обходит DPI. Hysteria — быстрее на '
-            'плохой связи (через UDP), доступен пока только на Германии.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: HundlerColors.textSecondary,
-                  fontSize: 11,
-                  height: 1.4,
-                ),
-          ),
-        ],
       ),
     );
   }
